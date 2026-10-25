@@ -8,7 +8,7 @@ function env(name: string): string {
 }
 
 export const EMBED_MODEL = process.env.GEMINI_EMBED_MODEL ?? "gemini-embedding-001";
-export const CHAT_MODEL = process.env.GEMINI_CHAT_MODEL ?? "gemini-2.5-flash";
+export const CHAT_MODEL = process.env.GEMINI_CHAT_MODEL ?? "gemini-3.8-flash";
 export const EMBED_DIM = 768; // must match vector(768) in the SQL migration
 
 export function gemini() { return new GoogleGenerativeAI(env("GEMINI_API_KEY")); }

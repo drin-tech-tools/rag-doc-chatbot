@@ -2,6 +2,8 @@
 
 Chat with your PDFs and get answers that **cite the exact source chunks and pages**. It's a production-style Retrieval-Augmented Generation (RAG) app that runs entirely on free tiers: Google Gemini API, Supabase pgvector, and Vercel Hobby.
 
+**Live demo:** [https://rag-doc-chatbot-brown.vercel.app/](https://rag-doc-chatbot-brown.vercel.app/)
+
 > Portfolio project #1 of 5 on the AI Engineer track.
 
 ## ✨ Features
@@ -9,7 +11,7 @@ Chat with your PDFs and get answers that **cite the exact source chunks and page
 - **Chunking**: overlapping word windows (200 words, 40 overlap) that keep page numbers
 - **Embeddings**: Gemini `gemini-embedding-001` (768-dim), batched
 - **Vector store**: Supabase Postgres + `pgvector` with an HNSW index and a `match_chunks` SQL function
-- **Grounded chat**: top-k retrieval, then Gemini `gemini-2.5-flash` with inline `[n]` citations. It says "I don't know" when the answer isn't in the sources.
+- **Grounded chat**: top-k retrieval, then Gemini `gemini-3.8-flash` with inline `[n]` citations. It says "I don't know" when the answer isn't in the sources.
 - **Source panel**: every answer shows the document, page, similarity score, and snippet
 
 ## 🏗️ Architecture
@@ -23,7 +25,7 @@ flowchart LR
   CH --> E2[Embed question]
   E2 -->|match_chunks top-k| DB
   DB -->|chunks + pages| PR[Prompt with numbered sources]
-  PR --> G[Gemini 2.5 Flash]
+  PR --> G[Gemini 3.8 Flash]
   G -->|answer with citations| U
 ```
 
