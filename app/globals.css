@@ -1,6 +1,21 @@
 * { box-sizing: border-box; }
 body { margin: 0; font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; }
 main { max-width: 820px; margin: 0 auto; padding: 32px 16px; }
+/* Full-viewport centered shell for login / MFA / set-password */
+main.auth-page {
+  max-width: none;
+  margin: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 24px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.auth-block {
+  width: 100%;
+  max-width: 420px;
+}
 h1 { margin: 0 0 4px; } .muted { color: #94a3b8; font-size: 14px; }
 .card { background: #1e293b; border-radius: 12px; padding: 16px; margin: 16px 0; }
 button { background: #6366f1; color: #fff; border: 0; border-radius: 8px; padding: 10px 16px; cursor: pointer; }

@@ -1,6 +1,5 @@
 // Import the inner module to avoid pdf-parse's debug self-test on load.
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore
+// @ts-ignore -- inner module path has no type declarations
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
 
 export async function extractPages(buf: Buffer): Promise<string[]> {
