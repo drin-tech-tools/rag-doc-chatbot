@@ -4,6 +4,14 @@ import { useState } from "react";
 type Source = { n: number; document: string; page: number; similarity: number; snippet: string };
 type Msg = { role: "user" | "assistant"; text: string; sources?: Source[] };
 
+/** Decode base64(UTF-8 JSON) from X-Rag-Sources (atob alone is Latin-1, not UTF-8-safe). */
+function decodeRagSourcesHeader(header: string): Source[] {
+  const binary = atob(header);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return JSON.parse(new TextDecoder().decode(bytes)) as Source[];
+}
+
 export default function Home() {
   const [doc, setDoc] = useState<{ documentId: string; name: string; pages: number; chunks: number } | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -64,7 +72,7 @@ export default function Home() {
       const sourcesHeader = res.headers.get("X-Rag-Sources");
       if (sourcesHeader) {
         try {
-          sources = JSON.parse(sourcesHeader);
+          sources = decodeRagSourcesHeader(sourcesHeader);
         } catch {
           /* ignore malformed header */
         }

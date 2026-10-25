@@ -315,13 +315,17 @@ Question: ${question}`;
       },
     });
 
+    // Base64(UTF-8 JSON) so curly quotes / non-ASCII in snippets stay valid HTTP header ByteStrings.
+    const sourcesHeader = Buffer.from(JSON.stringify(sourcePayload), "utf8").toString("base64");
+
     return new Response(body, {
       headers: {
         "Content-Type": "text/plain; charset=utf-8",
         "Cache-Control": "no-cache, no-transform",
-        "X-Rag-Sources": JSON.stringify(sourcePayload),
+        "X-Rag-Sources": sourcesHeader,
         "X-Chat-Model": chosenModel,
         "X-Chat-TTFT-Ms": String(live.ttftMs),
+        "Access-Control-Expose-Headers": "X-Rag-Sources, X-Chat-Model, X-Chat-TTFT-Ms",
       },
     });
   } catch (e: unknown) {
