@@ -1,4 +1,6 @@
 import type { GenerateContentResponse } from "@google/genai";
+import { assertSameOrigin } from "@/lib/auth/csrf";
+import { ownerScope, requirePermission } from "@/lib/auth/session";
 import {
   chatModels,
   embed,
@@ -214,6 +216,12 @@ async function startWithFailover(
 }
 
 export async function POST(req: Request) {
+  const csrf = assertSameOrigin(req);
+  if (csrf) return csrf;
+
+  const auth = await requirePermission("chat:use");
+  if (!auth.ok) return auth.response;
+
   const started = performance.now();
   const abort = new AbortController();
   const timeout = setTimeout(() => abort.abort(), CHAT_TIMEOUT_MS);
@@ -222,6 +230,19 @@ export async function POST(req: Request) {
   try {
     const { question, documentId, k = 5 } = await req.json();
     if (!question) return jsonError("question is required", 400);
+
+    // Non-admins may only query their own documents (and optionally one of theirs).
+    const filterOwner = ownerScope(auth.ctx);
+    if (documentId && filterOwner) {
+      const { data: owned, error: ownErr } = await supabase()
+        .from("documents")
+        .select("id")
+        .eq("id", documentId)
+        .eq("owner_id", filterOwner)
+        .maybeSingle();
+      if (ownErr) throw ownErr;
+      if (!owned) return jsonError("Document not found", 404);
+    }
 
     const embedStart = performance.now();
     const [qVec] = await embed([question]);
@@ -236,6 +257,7 @@ export async function POST(req: Request) {
       query_embedding: qVec,
       match_count: k,
       filter_document: documentId ?? null,
+      filter_owner: filterOwner,
     });
     console.log(`[chat] retrieval_ms=${msSince(retrievalStart)}`);
     if (error) throw error;

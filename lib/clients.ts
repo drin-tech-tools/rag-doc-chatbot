@@ -1,5 +1,5 @@
 import { GoogleGenAI, ThinkingLevel, type ThinkingConfig } from "@google/genai";
-import { createClient } from "@supabase/supabase-js";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 function env(name: string): string {
   const v = process.env[name];
@@ -70,10 +70,9 @@ export function gemini() {
   return new GoogleGenAI({ apiKey: env("GEMINI_API_KEY") });
 }
 
+/** Service-role Supabase client (server-only). Always filter by owner explicitly. */
 export function supabase() {
-  return createClient(env("SUPABASE_URL"), env("SUPABASE_SERVICE_ROLE_KEY"), {
-    auth: { persistSession: false },
-  });
+  return createAdminClient();
 }
 
 /** Batch-embed texts at EMBED_DIM so they stay compatible with existing pgvector data. */
