@@ -11,7 +11,7 @@ Chat with your PDFs and get answers that **cite the exact source chunks and page
 - **Chunking**: overlapping word windows (200 words, 40 overlap) that keep page numbers
 - **Embeddings**: Gemini `gemini-embedding-001` (768-dim), batched
 - **Vector store**: Supabase Postgres + `pgvector` with an HNSW index and a `match_chunks` SQL function
-- **Grounded chat**: top-k retrieval, then Gemini `gemini-3.8-flash` with inline `[n]` citations. It says "I don't know" when the answer isn't in the sources.
+- **Grounded chat**: top-k retrieval, then Gemini chat with ordered model failover (`GEMINI_CHAT_MODEL` → `gemini-3.5-flash-lite` → …), ~15s TTFT abort per model, and inline `[n]` citations. It says "I don't know" when the answer isn't in the sources.
 - **Source panel**: every answer shows the document, page, similarity score, and snippet
 
 ## 🏗️ Architecture
@@ -25,7 +25,7 @@ flowchart LR
   CH --> E2[Embed question]
   E2 -->|match_chunks top-k| DB
   DB -->|chunks + pages| PR[Prompt with numbered sources]
-  PR --> G[Gemini 3.8 Flash]
+  PR --> G[Gemini Flash-Lite / Flash failover]
   G -->|answer with citations| U
 ```
 

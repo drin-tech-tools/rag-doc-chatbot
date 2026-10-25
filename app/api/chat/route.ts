@@ -1,10 +1,18 @@
-import { ThinkingLevel } from "@google/genai";
-import { CHAT_MODEL, embed, gemini, supabase } from "@/lib/clients";
+import type { GenerateContentResponse } from "@google/genai";
+import {
+  chatModels,
+  embed,
+  gemini,
+  isThinkingConfigError,
+  supabase,
+  thinkingConfigFor,
+} from "@/lib/clients";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
 const CHAT_TIMEOUT_MS = 45_000;
+const FIRST_TOKEN_TIMEOUT_MS = 15_000;
 
 interface Match {
   id: number;
@@ -22,6 +30,14 @@ type SourceOut = {
   snippet: string;
 };
 
+type LiveStream = {
+  model: string;
+  firstText: string;
+  rest: AsyncGenerator<string, void, unknown>;
+  ttftMs: number;
+  attemptAbort: AbortController;
+};
+
 function msSince(start: number) {
   return Math.round(performance.now() - start);
 }
@@ -30,10 +46,178 @@ function jsonError(message: string, status: number) {
   return Response.json({ error: message }, { status });
 }
 
+function extractAnswerTexts(chunk: GenerateContentResponse): string[] {
+  const out: string[] = [];
+  const parts = chunk.candidates?.[0]?.content?.parts ?? [];
+  for (const part of parts) {
+    if (!part.text || part.thought) continue;
+    out.push(part.text);
+  }
+  if (!parts.length && chunk.text) out.push(chunk.text);
+  return out;
+}
+
+function linkAbort(parent: AbortSignal, child: AbortController) {
+  if (parent.aborted) {
+    child.abort();
+    return () => {};
+  }
+  const onAbort = () => child.abort();
+  parent.addEventListener("abort", onAbort, { once: true });
+  return () => parent.removeEventListener("abort", onAbort);
+}
+
+async function* answerTokenStream(
+  geminiStream: AsyncGenerator<GenerateContentResponse, unknown, unknown>,
+  signal: AbortSignal,
+): AsyncGenerator<string, void, unknown> {
+  for await (const chunk of geminiStream) {
+    if (signal.aborted) {
+      throw new Error("Chat timed out after 45s. Try a shorter question or try again.");
+    }
+    for (const text of extractAnswerTexts(chunk)) {
+      yield text;
+    }
+  }
+}
+
+async function openModelStream(
+  model: string,
+  prompt: string,
+  signal: AbortSignal,
+): Promise<AsyncGenerator<GenerateContentResponse, unknown, unknown>> {
+  const ai = gemini();
+  const configs: Array<ReturnType<typeof thinkingConfigFor> | undefined> = [
+    thinkingConfigFor(model),
+    undefined,
+  ];
+  // Deduplicate when thinkingConfigFor already returns undefined
+  const unique = configs.filter((c, i, arr) => i === arr.findIndex((x) => JSON.stringify(x) === JSON.stringify(c)));
+
+  let lastErr: unknown;
+  for (const thinkingConfig of unique) {
+    try {
+      return await ai.models.generateContentStream({
+        model,
+        contents: prompt,
+        config: {
+          abortSignal: signal,
+          ...(thinkingConfig ? { thinkingConfig } : {}),
+        },
+      });
+    } catch (err) {
+      lastErr = err;
+      const msg = err instanceof Error ? err.message : String(err);
+      if (thinkingConfig && isThinkingConfigError(err)) {
+        console.warn(
+          `[chat] model=${model} rejected thinkingConfig (${msg}); retrying without thinkingConfig`,
+        );
+        continue;
+      }
+      // Surface non-thinking API errors immediately (do not wait for TTFT).
+      console.error(`[chat] model=${model} api_error:`, msg);
+      throw err instanceof Error ? err : new Error(msg);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr ?? "Stream open failed"));
+}
+
+async function startWithFailover(
+  prompt: string,
+  overallSignal: AbortSignal,
+  overallStarted: number,
+): Promise<LiveStream> {
+  const models = chatModels();
+  console.log(`[chat] model_order=${models.join(",")}`);
+
+  const errors: string[] = [];
+
+  for (const model of models) {
+    if (overallSignal.aborted) break;
+
+    const elapsed = msSince(overallStarted);
+    const remaining = CHAT_TIMEOUT_MS - elapsed;
+    if (remaining < 1_000) break;
+
+    const ttftBudget = Math.min(FIRST_TOKEN_TIMEOUT_MS, remaining);
+    const attemptAbort = new AbortController();
+    const unlink = linkAbort(overallSignal, attemptAbort);
+    const attemptStarted = performance.now();
+    let firstTokenTimer: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      console.log(`[chat] trying_model=${model} ttft_budget_ms=${ttftBudget}`);
+      const geminiStream = await openModelStream(model, prompt, attemptAbort.signal);
+      const tokens = answerTokenStream(geminiStream, attemptAbort.signal);
+      const iterator = tokens[Symbol.asyncIterator]();
+
+      const first = await new Promise<IteratorResult<string, void>>((resolve, reject) => {
+        firstTokenTimer = setTimeout(() => {
+          attemptAbort.abort();
+          reject(new Error(`TTFT_TIMEOUT model=${model} after ${ttftBudget}ms`));
+        }, ttftBudget);
+
+        iterator
+          .next()
+          .then(resolve, reject)
+          .finally(() => {
+            if (firstTokenTimer) clearTimeout(firstTokenTimer);
+          });
+      });
+
+      if (first.done || !first.value) {
+        errors.push(`${model}: empty stream`);
+        console.warn(`[chat] model=${model} empty_stream`);
+        attemptAbort.abort();
+        unlink();
+        continue;
+      }
+
+      const firstText = first.value;
+      const ttftMs = msSince(attemptStarted);
+      console.log(`[chat] model=${model} answered generation_ttft_ms=${ttftMs}`);
+
+      // Keep overall→attempt abort link for the lifetime of the response stream.
+      async function* rest(): AsyncGenerator<string, void, unknown> {
+        yield firstText;
+        while (true) {
+          const next = await iterator.next();
+          if (next.done) return;
+          if (next.value !== undefined) yield next.value;
+        }
+      }
+
+      return { model, firstText, rest: rest(), ttftMs, attemptAbort };
+    } catch (err) {
+      unlink();
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`${model}: ${msg}`);
+      if (/TTFT_TIMEOUT/i.test(msg)) {
+        console.warn(`[chat] model=${model} no_first_token_within_ms=${ttftBudget}; trying next`);
+      } else if (overallSignal.aborted || /aborted|timeout/i.test(msg)) {
+        console.warn(`[chat] model=${model} aborted:`, msg);
+      } else {
+        // API / config errors already logged in openModelStream; continue failover.
+        console.warn(`[chat] model=${model} failed_fast:`, msg);
+      }
+    } finally {
+      if (firstTokenTimer) clearTimeout(firstTokenTimer);
+    }
+  }
+
+  if (overallSignal.aborted) {
+    throw new Error("Chat timed out after 45s. Try a shorter question or try again.");
+  }
+  throw new Error(
+    `All chat models failed before first token. Tried: ${models.join(", ")}. ${errors.slice(-3).join(" | ")}`,
+  );
+}
+
 export async function POST(req: Request) {
   const started = performance.now();
   const abort = new AbortController();
   const timeout = setTimeout(() => abort.abort(), CHAT_TIMEOUT_MS);
+  let live: LiveStream | null = null;
 
   try {
     const { question, documentId, k = 5 } = await req.json();
@@ -89,45 +273,22 @@ Question: ${question}`;
     }
 
     const generationStart = performance.now();
-    const ai = gemini();
-    const geminiStream = await ai.models.generateContentStream({
-      model: CHAT_MODEL,
-      contents: prompt,
-      config: {
-        abortSignal: abort.signal,
-        // gemini-3.8-flash supports LOW (not MINIMAL); cuts latency vs default MEDIUM
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-      },
-    });
+    live = await startWithFailover(prompt, abort.signal, started);
 
     const encoder = new TextEncoder();
-    let firstToken = true;
+    const chosenModel = live.model;
     const body = new ReadableStream<Uint8Array>({
       async start(controller) {
         try {
-          for await (const chunk of geminiStream) {
+          for await (const text of live!.rest) {
             if (abort.signal.aborted) {
               throw new Error("Chat timed out after 45s. Try a shorter question or try again.");
             }
-            const parts = chunk.candidates?.[0]?.content?.parts ?? [];
-            for (const part of parts) {
-              if (!part.text || part.thought) continue;
-              if (firstToken) {
-                console.log(`[chat] generation_ttft_ms=${msSince(generationStart)}`);
-                firstToken = false;
-              }
-              controller.enqueue(encoder.encode(part.text));
-            }
-            // Fallback when parts are absent but aggregated text is present
-            if (!parts.length && chunk.text) {
-              if (firstToken) {
-                console.log(`[chat] generation_ttft_ms=${msSince(generationStart)}`);
-                firstToken = false;
-              }
-              controller.enqueue(encoder.encode(chunk.text));
-            }
+            controller.enqueue(encoder.encode(text));
           }
-          console.log(`[chat] generation_ms=${msSince(generationStart)} total_ms=${msSince(started)}`);
+          console.log(
+            `[chat] model=${chosenModel} generation_ms=${msSince(generationStart)} total_ms=${msSince(started)}`,
+          );
           controller.close();
         } catch (e: unknown) {
           const message =
@@ -136,7 +297,7 @@ Question: ${question}`;
               : e instanceof Error
                 ? e.message
                 : "Chat failed";
-          console.error(`[chat] generation_error total_ms=${msSince(started)}:`, message);
+          console.error(`[chat] generation_error model=${chosenModel} total_ms=${msSince(started)}:`, message);
           try {
             controller.enqueue(encoder.encode(`\n\n[Error] ${message}`));
           } catch {
@@ -149,6 +310,7 @@ Question: ${question}`;
       },
       cancel() {
         abort.abort();
+        live?.attemptAbort.abort();
         clearTimeout(timeout);
       },
     });
@@ -158,7 +320,8 @@ Question: ${question}`;
         "Content-Type": "text/plain; charset=utf-8",
         "Cache-Control": "no-cache, no-transform",
         "X-Rag-Sources": JSON.stringify(sourcePayload),
-        "X-Chat-Model": CHAT_MODEL,
+        "X-Chat-Model": chosenModel,
+        "X-Chat-TTFT-Ms": String(live.ttftMs),
       },
     });
   } catch (e: unknown) {
