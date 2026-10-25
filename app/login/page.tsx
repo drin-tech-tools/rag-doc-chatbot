@@ -3,6 +3,7 @@
 import { FormEvent, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
+import { AuthShell } from "@/app/components/AuthShell";
 
 function LoginForm() {
   const router = useRouter();
@@ -37,7 +38,7 @@ function LoginForm() {
   }
 
   return (
-    <main>
+    <AuthShell>
       <h1>RAG Doc Chatbot</h1>
       <p className="muted">Sign in with your invited account. Public signup is disabled.</p>
       <form onSubmit={onSubmit} className="card" style={{ display: "grid", gap: 12, maxWidth: 420 }}>
@@ -68,13 +69,13 @@ function LoginForm() {
           {loading ? "Signing in…" : "Sign in"}
         </button>
       </form>
-    </main>
+    </AuthShell>
   );
 }
 
 export default function LoginPage() {
   return (
-    <Suspense fallback={<main><p className="muted">Loading…</p></main>}>
+    <Suspense fallback={<AuthShell><p className="muted">Loading…</p></AuthShell>}>
       <LoginForm />
     </Suspense>
   );

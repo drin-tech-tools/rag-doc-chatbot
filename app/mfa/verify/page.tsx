@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { AuthShell } from "@/app/components/AuthShell";
 
 export default function MfaVerifyPage() {
   const router = useRouter();
@@ -77,7 +78,7 @@ export default function MfaVerifyPage() {
   }
 
   return (
-    <main>
+    <AuthShell>
       <h1>Two-factor verification</h1>
       <p className="muted">Enter the 6-digit code from your authenticator app.</p>
       <form onSubmit={onSubmit} className="card" style={{ display: "grid", gap: 12, maxWidth: 420 }}>
@@ -103,6 +104,6 @@ export default function MfaVerifyPage() {
           Lost your device? Ask an admin to reset MFA. <a href="/api/auth/logout">Sign out</a>
         </p>
       </form>
-    </main>
+    </AuthShell>
   );
 }

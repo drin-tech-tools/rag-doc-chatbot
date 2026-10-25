@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
+import { AuthShell } from "@/app/components/AuthShell";
 
 export default function SetPasswordPage() {
   const router = useRouter();
@@ -39,7 +40,7 @@ export default function SetPasswordPage() {
   }
 
   return (
-    <main>
+    <AuthShell>
       <h1>Choose a password</h1>
       <p className="muted">
         You were invited to RAG Doc Chatbot. Set a password (min 10 characters), then enroll MFA.
@@ -74,6 +75,6 @@ export default function SetPasswordPage() {
           {loading ? "Saving…" : "Continue to MFA setup"}
         </button>
       </form>
-    </main>
+    </AuthShell>
   );
 }

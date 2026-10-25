@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { AuthShell } from "@/app/components/AuthShell";
 
 export default function MfaSetupPage() {
   const router = useRouter();
@@ -75,7 +76,7 @@ export default function MfaSetupPage() {
   }
 
   return (
-    <main>
+    <AuthShell>
       <h1>Set up two-factor authentication</h1>
       <p className="muted">
         Scan the QR code with an authenticator app (Google Authenticator, 1Password, Authy, …), then
@@ -123,6 +124,6 @@ export default function MfaSetupPage() {
           <a href="/api/auth/logout">Sign out</a>
         </p>
       </div>
-    </main>
+    </AuthShell>
   );
 }
