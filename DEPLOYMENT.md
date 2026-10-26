@@ -8,6 +8,7 @@ Step-by-step deploy for this RAG Doc Chatbot on free tiers (Supabase + Gemini + 
 2. Open **SQL Editor** and run, in order:
    - [`supabase/migrations/0001_init.sql`](supabase/migrations/0001_init.sql) (if not already applied)
    - [`supabase/migrations/0002_auth_rbac.sql`](supabase/migrations/0002_auth_rbac.sql) — `user_roles`, `documents.owner_id`, scoped `match_chunks`, RLS
+   - [`supabase/migrations/0003_match_chunks_harden.sql`](supabase/migrations/0003_match_chunks_harden.sql) — drop legacy 3-arg `match_chunks` overload, 8s statement timeout, EXECUTE grants
 3. Expect: **Success. No rows returned** (idempotent `create table if not exists` / `add column if not exists`).
 
 ### Auth dashboard (required for MFA wall)
@@ -111,7 +112,7 @@ Live demo for this portfolio deploy: [https://rag-doc-chatbot-brown.vercel.app/]
 | Landed on `/login#access_token=…` / cannot set password | Redirect allowlist missing the invite `redirectTo`; app now consumes hash tokens, but still add the Redirect URLs above. Re-run `npm run bootstrap-admin` for a fresh recovery email. |
 | `No role assigned` | Upsert `user_roles` for `app = 'rag-doc-chatbot'` (bootstrap script or admin invite). |
 | **404 / model not available** | Set `GEMINI_CHAT_MODEL` to a model your key can access, or rely on the built-in fallback list in `lib/clients.ts`. |
-| **Chat hangs / timeouts** | Overall chat budget is **45s**. In **Vercel → Deployments → Logs**, look for `[chat]` timing lines. |
+| **Chat hangs / timeouts** | Overall chat budget is **45s**. In **Vercel → Deployments → Logs**, look for `[chat] auth_ms` / `embed_ms` / `retrieval_ms` / `stream_open_ms` / `generation_ttft_ms` to see which phase stalled. Apply migration **0003**. Optionally set `GEMINI_CHAT_MODEL` to a model your key can reach. |
 | **Upload: no extractable text** | Use a text PDF (OCR not included). |
 | **Upload rejected at 4 MB** | Vercel Hobby body limit — keep PDFs under **4 MB**. |
 

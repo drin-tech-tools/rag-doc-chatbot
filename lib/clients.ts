@@ -76,15 +76,22 @@ export function supabase() {
 }
 
 /** Batch-embed texts at EMBED_DIM so they stay compatible with existing pgvector data. */
-export async function embed(texts: string[]): Promise<number[][]> {
+export async function embed(
+  texts: string[],
+  opts?: { signal?: AbortSignal },
+): Promise<number[][]> {
   const ai = gemini();
   const out: number[][] = [];
   for (let i = 0; i < texts.length; i += 100) {
+    if (opts?.signal?.aborted) throw new Error("Embedding aborted");
     const batch = texts.slice(i, i + 100);
     const res = await ai.models.embedContent({
       model: EMBED_MODEL,
       contents: batch,
-      config: { outputDimensionality: EMBED_DIM },
+      config: {
+        outputDimensionality: EMBED_DIM,
+        ...(opts?.signal ? { abortSignal: opts.signal } : {}),
+      },
     });
     const vectors = res.embeddings ?? [];
     if (vectors.length !== batch.length) {

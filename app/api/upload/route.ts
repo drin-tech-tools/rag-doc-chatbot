@@ -23,6 +23,7 @@ export async function POST(req: Request) {
     if (file.size > 4 * 1024 * 1024)
       return NextResponse.json({ error: "Max 4 MB (Vercel Hobby body limit)" }, { status: 400 });
 
+    const started = performance.now();
     const pages = await extractPages(Buffer.from(await file.arrayBuffer()));
     const chunks = chunkPages(pages);
     if (!chunks.length)
@@ -36,7 +37,11 @@ export async function POST(req: Request) {
       .single();
     if (docErr) throw docErr;
 
+    const embedStart = performance.now();
     const vectors = await embed(chunks.map((c) => c.content));
+    console.log(
+      `[upload] embed_ms=${Math.round(performance.now() - embedStart)} chunks=${chunks.length} owner=${auth.ctx.user.id}`,
+    );
     const rows = chunks.map((c, i) => ({
       document_id: doc.id,
       page: c.page,
@@ -44,8 +49,12 @@ export async function POST(req: Request) {
       content: c.content,
       embedding: vectors[i],
     }));
+    const insertStart = performance.now();
     const { error } = await db.from("chunks").insert(rows);
     if (error) throw error;
+    console.log(
+      `[upload] insert_ms=${Math.round(performance.now() - insertStart)} total_ms=${Math.round(performance.now() - started)} documentId=${doc.id}`,
+    );
 
     return NextResponse.json({
       documentId: doc.id,
@@ -55,6 +64,7 @@ export async function POST(req: Request) {
     });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Upload failed";
+    console.error(`[upload] error:`, message);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

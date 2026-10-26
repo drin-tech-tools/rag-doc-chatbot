@@ -23,7 +23,7 @@ Chat with your PDFs and get answers that cite the exact source chunks and pages.
 - **Vector store** — Supabase Postgres + `pgvector` (HNSW, cosine) with owner-scoped `match_chunks`
 - **Streaming chat** — token stream (`text/plain`) with inline `[n]` citations; sources in base64 `X-Rag-Sources`
 - **Model fallback** — `GEMINI_CHAT_MODEL` (optional) then `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` → `gemini-flash-latest` → `gemini-3.6-flash` → `gemini-3.8-flash`, with ~15s TTFT abort per model
-- **Timeouts & timing logs** — 45s overall chat budget; Vercel logs emit `[chat] embed_ms` / `retrieval_ms` / generation timing
+- **Timeouts & timing logs** — 45s overall chat budget with per-phase caps (embed / retrieval / stream-open / TTFT); Vercel logs emit `[chat] auth_ms` / `embed_ms` / `retrieval_ms` / `stream_open_ms` / `generation_ttft_ms`
 - **Source panel** — document, page, similarity score, and snippet per citation
 - **Grounded answers** — says it doesn't know when the answer isn't in the retrieved sources
 
