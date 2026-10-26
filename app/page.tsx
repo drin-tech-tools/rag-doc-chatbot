@@ -5,6 +5,7 @@ import Link from "next/link";
 type Source = { n: number; document: string; page: number; similarity: number; snippet: string };
 type Msg = { role: "user" | "assistant"; text: string; sources?: Source[] };
 type Me = { email?: string; role: string; canManageUsers: boolean };
+type DocOption = { documentId: string; name: string; pages?: number; chunks?: number };
 
 /** Decode base64(UTF-8 JSON) from X-Rag-Sources (atob alone is Latin-1, not UTF-8-safe). */
 function decodeRagSourcesHeader(header: string): Source[] {
@@ -16,12 +17,33 @@ function decodeRagSourcesHeader(header: string): Source[] {
 
 export default function Home() {
   const [me, setMe] = useState<Me | null>(null);
-  const [doc, setDoc] = useState<{ documentId: string; name: string; pages: number; chunks: number } | null>(null);
+  const [docs, setDocs] = useState<DocOption[]>([]);
+  const [doc, setDoc] = useState<DocOption | null>(null);
   const [uploading, setUploading] = useState(false);
   const [question, setQuestion] = useState("");
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  async function refreshDocs(selectId?: string) {
+    try {
+      const res = await fetch("/api/documents");
+      if (!res.ok) return;
+      const data = (await res.json()) as { documents?: DocOption[] };
+      const list = data.documents ?? [];
+      setDocs(list);
+      setDoc((current) => {
+        const preferredId = selectId ?? current?.documentId;
+        if (preferredId) {
+          const match = list.find((d) => d.documentId === preferredId);
+          if (match) return { ...match, pages: current?.pages, chunks: current?.chunks };
+        }
+        return list[0] ?? null;
+      });
+    } catch {
+      /* ignore list failures — upload/chat still work */
+    }
+  }
 
   useEffect(() => {
     fetch("/api/me")
@@ -30,6 +52,7 @@ export default function Home() {
         setMe(await res.json());
       })
       .catch(() => {});
+    void refreshDocs();
   }, []);
 
   async function upload(file: File) {
@@ -41,7 +64,16 @@ export default function Home() {
     const data = await res.json();
     setUploading(false);
     if (!res.ok) return setError(data.error);
-    setDoc(data);
+    const uploaded: DocOption = {
+      documentId: data.documentId,
+      name: data.name,
+      pages: data.pages,
+      chunks: data.chunks,
+    };
+    // Immediately select the just-uploaded doc so the next question scopes to it.
+    setDoc(uploaded);
+    setDocs((prev) => [uploaded, ...prev.filter((d) => d.documentId !== uploaded.documentId)]);
+    await refreshDocs(uploaded.documentId);
   }
 
   async function ask(e: React.FormEvent) {
@@ -57,7 +89,7 @@ export default function Home() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q, documentId: doc?.documentId }),
+        body: JSON.stringify({ question: q, documentId: doc?.documentId ?? null }),
       });
 
       const contentType = res.headers.get("content-type") ?? "";
@@ -120,8 +152,8 @@ export default function Home() {
       }
 
       setLoading(false);
-      if (full.includes("[Error] Chat timed out")) {
-        setError("Chat timed out after 45s. Try a shorter question or try again.");
+      if (/\[Error\].*timed out/i.test(full)) {
+        setError(full.replace(/^[\s\S]*\[Error\]\s*/, "").trim() || "Chat timed out");
       }
     } catch (err: unknown) {
       setLoading(false);
@@ -159,11 +191,42 @@ export default function Home() {
           disabled={uploading}
           onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])}
         />
+        <label className="muted" style={{ display: "block", marginTop: 12 }}>
+          Document for questions
+          <select
+            value={doc?.documentId ?? ""}
+            onChange={(e) => {
+              const id = e.target.value;
+              if (!id) {
+                setDoc(null);
+                return;
+              }
+              const match = docs.find((d) => d.documentId === id);
+              setDoc(match ?? { documentId: id, name: id });
+            }}
+            style={{ display: "block", width: "100%", marginTop: 4 }}
+          >
+            <option value="">
+              {me?.role === "admin"
+                ? "All indexed documents"
+                : "All of your documents"}
+            </option>
+            {docs.map((d) => (
+              <option key={d.documentId} value={d.documentId}>
+                {d.name}
+              </option>
+            ))}
+          </select>
+        </label>
         <p className="muted">
           {uploading
             ? "Parsing, chunking and embedding…"
             : doc
-              ? `${doc.name}: ${doc.pages} pages, ${doc.chunks} chunks indexed`
+              ? `${doc.name} selected${
+                  doc.pages != null && doc.chunks != null
+                    ? ` (${doc.pages} pages, ${doc.chunks} chunks)`
+                    : ""
+                }`
               : me?.role === "admin"
                 ? "No document selected (questions search all indexed docs)."
                 : "No document selected (questions search your documents only)."}

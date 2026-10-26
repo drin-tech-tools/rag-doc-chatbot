@@ -1,4 +1,5 @@
 import type { GenerateContentResponse } from "@google/genai";
+import { withTimeout } from "@/lib/async";
 import { assertSameOrigin } from "@/lib/auth/csrf";
 import { ownerScope, requirePermission } from "@/lib/auth/session";
 import {
@@ -14,10 +15,16 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 const CHAT_TIMEOUT_MS = 45_000;
-const FIRST_TOKEN_TIMEOUT_MS = 15_000;
+/** Cap waiting for generateContentStream() to even open (before first token). */
+const STREAM_OPEN_TIMEOUT_MS = 10_000;
+/** Cap waiting for the first answer token after the stream is open. */
+const FIRST_TOKEN_TIMEOUT_MS = 12_000;
+const EMBED_TIMEOUT_MS = 12_000;
+const RETRIEVAL_TIMEOUT_MS = 8_000;
 
 interface Match {
   id: number;
+  document_id: string;
   document_name: string;
   page: number;
   content: string;
@@ -40,12 +47,18 @@ type LiveStream = {
   attemptAbort: AbortController;
 };
 
+type ChatPhase = "auth" | "embed" | "retrieval" | "generation";
+
 function msSince(start: number) {
   return Math.round(performance.now() - start);
 }
 
 function jsonError(message: string, status: number) {
   return Response.json({ error: message }, { status });
+}
+
+function timeoutMessage(phase: ChatPhase) {
+  return `Chat timed out during ${phase} after ${CHAT_TIMEOUT_MS / 1000}s. Try again, or set GEMINI_CHAT_MODEL to a model your key can reach.`;
 }
 
 function extractAnswerTexts(chunk: GenerateContentResponse): string[] {
@@ -75,7 +88,7 @@ async function* answerTokenStream(
 ): AsyncGenerator<string, void, unknown> {
   for await (const chunk of geminiStream) {
     if (signal.aborted) {
-      throw new Error("Chat timed out after 45s. Try a shorter question or try again.");
+      throw new Error("generation aborted");
     }
     for (const text of extractAnswerTexts(chunk)) {
       yield text;
@@ -94,19 +107,31 @@ async function openModelStream(
     undefined,
   ];
   // Deduplicate when thinkingConfigFor already returns undefined
-  const unique = configs.filter((c, i, arr) => i === arr.findIndex((x) => JSON.stringify(x) === JSON.stringify(c)));
+  const unique = configs.filter(
+    (c, i, arr) => i === arr.findIndex((x) => JSON.stringify(x) === JSON.stringify(c)),
+  );
 
   let lastErr: unknown;
   for (const thinkingConfig of unique) {
     try {
-      return await ai.models.generateContentStream({
-        model,
-        contents: prompt,
-        config: {
-          abortSignal: signal,
-          ...(thinkingConfig ? { thinkingConfig } : {}),
-        },
-      });
+      const openStarted = performance.now();
+      const stream = await withTimeout(
+        ai.models.generateContentStream({
+          model,
+          contents: prompt,
+          config: {
+            abortSignal: signal,
+            ...(thinkingConfig ? { thinkingConfig } : {}),
+          },
+        }),
+        STREAM_OPEN_TIMEOUT_MS,
+        `stream_open model=${model}`,
+        signal,
+      );
+      console.log(
+        `[chat] model=${model} stream_open_ms=${msSince(openStarted)} thinking=${thinkingConfig ? "on" : "off"}`,
+      );
+      return stream;
     } catch (err) {
       lastErr = err;
       const msg = err instanceof Error ? err.message : String(err);
@@ -148,7 +173,9 @@ async function startWithFailover(
     let firstTokenTimer: ReturnType<typeof setTimeout> | undefined;
 
     try {
-      console.log(`[chat] trying_model=${model} ttft_budget_ms=${ttftBudget}`);
+      console.log(
+        `[chat] trying_model=${model} ttft_budget_ms=${ttftBudget} remaining_ms=${remaining}`,
+      );
       const geminiStream = await openModelStream(model, prompt, attemptAbort.signal);
       const tokens = answerTokenStream(geminiStream, attemptAbort.signal);
       const iterator = tokens[Symbol.asyncIterator]();
@@ -194,12 +221,11 @@ async function startWithFailover(
       unlink();
       const msg = err instanceof Error ? err.message : String(err);
       errors.push(`${model}: ${msg}`);
-      if (/TTFT_TIMEOUT/i.test(msg)) {
-        console.warn(`[chat] model=${model} no_first_token_within_ms=${ttftBudget}; trying next`);
+      if (/TTFT_TIMEOUT|stream_open.*timed out/i.test(msg)) {
+        console.warn(`[chat] model=${model} no_first_token:`, msg);
       } else if (overallSignal.aborted || /aborted|timeout/i.test(msg)) {
         console.warn(`[chat] model=${model} aborted:`, msg);
       } else {
-        // API / config errors already logged in openModelStream; continue failover.
         console.warn(`[chat] model=${model} failed_fast:`, msg);
       }
     } finally {
@@ -208,7 +234,7 @@ async function startWithFailover(
   }
 
   if (overallSignal.aborted) {
-    throw new Error("Chat timed out after 45s. Try a shorter question or try again.");
+    throw new Error(timeoutMessage("generation"));
   }
   throw new Error(
     `All chat models failed before first token. Tried: ${models.join(", ")}. ${errors.slice(-3).join(" | ")}`,
@@ -219,8 +245,11 @@ export async function POST(req: Request) {
   const csrf = assertSameOrigin(req);
   if (csrf) return csrf;
 
+  let phase: ChatPhase = "auth";
+  const authStarted = performance.now();
   const auth = await requirePermission("chat:use");
   if (!auth.ok) return auth.response;
+  console.log(`[chat] auth_ms=${msSince(authStarted)} role=${auth.ctx.role}`);
 
   const started = performance.now();
   const abort = new AbortController();
@@ -233,6 +262,10 @@ export async function POST(req: Request) {
 
     // Non-admins may only query their own documents (and optionally one of theirs).
     const filterOwner = ownerScope(auth.ctx);
+    console.log(
+      `[chat] question_len=${String(question).length} documentId=${documentId ?? "null"} filter_owner=${filterOwner ?? "null (admin-all)"} k=${k}`,
+    );
+
     if (documentId && filterOwner) {
       const { data: owned, error: ownErr } = await supabase()
         .from("documents")
@@ -244,32 +277,66 @@ export async function POST(req: Request) {
       if (!owned) return jsonError("Document not found", 404);
     }
 
+    phase = "embed";
     const embedStart = performance.now();
-    const [qVec] = await embed([question]);
-    console.log(`[chat] embed_ms=${msSince(embedStart)}`);
+    const embedBudget = Math.max(
+      1_000,
+      Math.min(EMBED_TIMEOUT_MS, CHAT_TIMEOUT_MS - msSince(started)),
+    );
+    const [qVec] = await withTimeout(
+      embed([question], { signal: abort.signal }),
+      embedBudget,
+      "embed",
+      abort.signal,
+    );
+    console.log(`[chat] embed_ms=${msSince(embedStart)} dims=${qVec?.length ?? 0}`);
 
     if (abort.signal.aborted) {
-      return jsonError("Chat timed out after 45s. Try a shorter question or try again.", 504);
+      return jsonError(timeoutMessage("embed"), 504);
     }
 
+    phase = "retrieval";
     const retrievalStart = performance.now();
-    const { data, error } = await supabase().rpc("match_chunks", {
-      query_embedding: qVec,
-      match_count: k,
-      filter_document: documentId ?? null,
-      filter_owner: filterOwner,
-    });
-    console.log(`[chat] retrieval_ms=${msSince(retrievalStart)}`);
+    const retrievalBudget = Math.max(
+      1_000,
+      Math.min(RETRIEVAL_TIMEOUT_MS, CHAT_TIMEOUT_MS - msSince(started)),
+    );
+    const { data, error } = await withTimeout(
+      Promise.resolve(
+        supabase().rpc("match_chunks", {
+          query_embedding: qVec,
+          match_count: k,
+          filter_document: documentId ?? null,
+          filter_owner: filterOwner,
+        }),
+      ),
+      retrievalBudget,
+      "retrieval",
+      abort.signal,
+    );
+    console.log(
+      `[chat] retrieval_ms=${msSince(retrievalStart)} sources=${(data ?? []).length} rpc_error=${error?.message ?? "none"}`,
+    );
     if (error) throw error;
 
     const sources = (data ?? []) as Match[];
     if (!sources.length) {
       console.log(`[chat] total_ms=${msSince(started)} (no sources)`);
       return Response.json({
-        answer: "No documents indexed yet. Upload a PDF first.",
+        answer:
+          documentId
+            ? "No chunks found for that document. Re-upload the PDF, or pick another document."
+            : "No documents indexed yet. Upload a PDF first.",
         sources: [],
       });
     }
+
+    console.log(
+      `[chat] top_sources=${sources
+        .slice(0, 3)
+        .map((s) => `${s.document_name}:p${s.page}@${s.similarity?.toFixed?.(3) ?? "?"}`)
+        .join(", ")}`,
+    );
 
     const sourcePayload: SourceOut[] = sources.map((s, i) => ({
       n: i + 1,
@@ -291,9 +358,10 @@ ${context}
 Question: ${question}`;
 
     if (abort.signal.aborted) {
-      return jsonError("Chat timed out after 45s. Try a shorter question or try again.", 504);
+      return jsonError(timeoutMessage("retrieval"), 504);
     }
 
+    phase = "generation";
     const generationStart = performance.now();
     live = await startWithFailover(prompt, abort.signal, started);
 
@@ -304,7 +372,7 @@ Question: ${question}`;
         try {
           for await (const text of live!.rest) {
             if (abort.signal.aborted) {
-              throw new Error("Chat timed out after 45s. Try a shorter question or try again.");
+              throw new Error(timeoutMessage("generation"));
             }
             controller.enqueue(encoder.encode(text));
           }
@@ -315,11 +383,14 @@ Question: ${question}`;
         } catch (e: unknown) {
           const message =
             abort.signal.aborted || (e instanceof Error && /aborted|timeout/i.test(e.message))
-              ? "Chat timed out after 45s. Try a shorter question or try again."
+              ? timeoutMessage("generation")
               : e instanceof Error
                 ? e.message
                 : "Chat failed";
-          console.error(`[chat] generation_error model=${chosenModel} total_ms=${msSince(started)}:`, message);
+          console.error(
+            `[chat] generation_error model=${chosenModel} total_ms=${msSince(started)}:`,
+            message,
+          );
           try {
             controller.enqueue(encoder.encode(`\n\n[Error] ${message}`));
           } catch {
@@ -352,13 +423,15 @@ Question: ${question}`;
     });
   } catch (e: unknown) {
     clearTimeout(timeout);
-    const timedOut = abort.signal.aborted;
+    const timedOut = abort.signal.aborted || (e instanceof Error && /timed out/i.test(e.message));
     const message = timedOut
-      ? "Chat timed out after 45s. Try a shorter question or try again."
+      ? e instanceof Error && /timed out during/i.test(e.message)
+        ? e.message
+        : timeoutMessage(phase)
       : e instanceof Error
         ? e.message
         : "Chat failed";
-    console.error(`[chat] error total_ms=${msSince(started)}:`, message);
+    console.error(`[chat] error phase=${phase} total_ms=${msSince(started)}:`, message);
     return jsonError(message, timedOut ? 504 : 500);
   }
 }
