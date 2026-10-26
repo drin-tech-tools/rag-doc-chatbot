@@ -10,7 +10,12 @@ function LoginForm() {
   const params = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState(params.get("error") ? "Sign-in link failed. Try again." : "");
+  const [error, setError] = useState(() => {
+    const raw = params.get("error");
+    if (!raw) return "";
+    if (raw === "auth_callback_failed") return "Sign-in link failed. Try again.";
+    return raw;
+  });
   const [loading, setLoading] = useState(false);
 
   async function onSubmit(e: FormEvent) {

@@ -11,5 +11,12 @@ export function createClient() {
   if (!url || !key) {
     throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL / publishable key");
   }
-  return createBrowserClient(url, key);
+  // Disable automatic URL detection — AuthUrlHandler /auth/callback owns
+  // hash + token_hash + PKCE so we can route invite/recovery to set-password.
+  return createBrowserClient(url, key, {
+    auth: {
+      detectSessionInUrl: false,
+      flowType: "pkce",
+    },
+  });
 }

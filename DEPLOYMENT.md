@@ -14,11 +14,22 @@ Step-by-step deploy for this RAG Doc Chatbot on free tiers (Supabase + Gemini + 
 
 1. **Authentication → Providers → Email**: turn **Allow new users to sign up** **OFF** (invite-only).
 2. **Authentication → Multi-Factor Auth**: enable **TOTP** (App Authenticator).
-3. **Authentication → URL Configuration**:
+3. **Authentication → URL Configuration** (required — wrong allowlist is why invites fall back to Site URL with `#access_token=…` on `/login`):
    - **Site URL**: `https://rag-doc-chatbot-brown.vercel.app`
-   - **Redirect URLs**: add `https://rag-doc-chatbot-brown.vercel.app/auth/callback`
-   - For local dev, also add `http://localhost:3000/auth/callback`
-4. **Project Settings → API Keys**:
+   - **Redirect URLs** — add all of these (wildcards OK; exact paths preferred in production):
+
+     | URL | Why |
+     |---|---|
+     | `https://rag-doc-chatbot-brown.vercel.app/auth/callback` | PKCE / callback landing |
+     | `https://rag-doc-chatbot-brown.vercel.app/auth/callback?next=/auth/set-password` | Invite + recovery `redirectTo` used by bootstrap + admin invite |
+     | `https://rag-doc-chatbot-brown.vercel.app/**` | Safety net so Site URL fallback + previews still allow the app origin |
+     | `http://localhost:3000/auth/callback` | Local PKCE / callback |
+     | `http://localhost:3000/auth/callback?next=/auth/set-password` | Local invite / recovery |
+     | `http://localhost:3000/**` | Local safety net |
+
+   - After saving, re-run `npm run bootstrap-admin` so a fresh invite/recovery email is issued (old links are single-use).
+4. **Email templates** (recommended): prefer `{{ .RedirectTo }}` over `{{ .SiteURL }}` for the CTA href so invite/recovery honor `redirectTo`. The app also accepts implicit-flow `#access_token` on `/login` and `/auth/callback` if a link still lands on Site URL.
+5. **Project Settings → API Keys**:
    - Copy **Project URL** → `NEXT_PUBLIC_SUPABASE_URL`
    - Copy **Publishable** key (`sb_publishable_…`) → `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
    - Copy **Secret** key (`sb_secret_…` / service role) → `SUPABASE_SERVICE_ROLE_KEY` (server only)
@@ -29,6 +40,7 @@ Set `ADMIN_EMAIL` locally (and in Vercel), then either:
 
 ```bash
 # From a machine with service role + ADMIN_EMAIL in env (.env.local or exported)
+# Works on Node 20 (script uses Auth Admin HTTP APIs — not the supabase-js realtime/ws stack).
 npm run bootstrap-admin
 ```
 
@@ -41,7 +53,7 @@ values ('<auth-user-uuid>', 'rag-doc-chatbot', 'admin')
 on conflict (user_id, app) do update set role = excluded.role;
 ```
 
-The bootstrap script **invites** `ADMIN_EMAIL` and upserts `admin` for `rag-doc-chatbot`. It never sets or prints a password — the invitee opens the email, sets a password at `/auth/set-password`, then enrolls MFA.
+The bootstrap script **invites** `ADMIN_EMAIL` (or, if the user already exists / invite was consumed, sends a **recovery** email to the same `redirectTo`) and upserts `admin` for `rag-doc-chatbot`. It never sets or prints a password — the invitee opens the email, sets a password at `/auth/set-password`, then enrolls MFA.
 
 ## (b) Gemini API key
 
@@ -77,7 +89,7 @@ Vercel **Hobby** cannot deploy private repos owned by a GitHub organization; tha
 
 4. **Skip** the optional Supabase marketplace / integration wizard — it would provision a **second** database. You already created the project and ran the migrations manually.
 5. Click **Deploy**. Build warnings (e.g. ESLint / dependency notices) are fine as long as the build succeeds.
-6. After deploy, run `npm run bootstrap-admin` once (locally with the same env), accept the invite email, set password, enroll TOTP.
+6. Confirm **Redirect URLs** (section a) are saved in Supabase, then run `npm run bootstrap-admin` (locally with the same env). Accept the invite (or recovery) email → **/auth/set-password** → **/mfa/setup**. Re-run the script anytime to resend a recovery link for an existing admin.
 
 ## (e) Verify
 
@@ -95,7 +107,8 @@ Live demo for this portfolio deploy: [https://rag-doc-chatbot-brown.vercel.app/]
 | Symptom | What to do |
 |---|---|
 | Redirect loop on MFA | Confirm TOTP is enabled in Supabase Auth → MFA. Reset the user’s factors from `/admin/users` → Reset MFA. |
-| Invite email missing | Check Supabase Auth → Users and spam; confirm Site URL + Redirect URLs include `/auth/callback`. |
+| Invite email missing | Check Supabase Auth → Users and spam; confirm Site URL + Redirect URLs (table in section a). |
+| Landed on `/login#access_token=…` / cannot set password | Redirect allowlist missing the invite `redirectTo`; app now consumes hash tokens, but still add the Redirect URLs above. Re-run `npm run bootstrap-admin` for a fresh recovery email. |
 | `No role assigned` | Upsert `user_roles` for `app = 'rag-doc-chatbot'` (bootstrap script or admin invite). |
 | **404 / model not available** | Set `GEMINI_CHAT_MODEL` to a model your key can access, or rely on the built-in fallback list in `lib/clients.ts`. |
 | **Chat hangs / timeouts** | Overall chat budget is **45s**. In **Vercel → Deployments → Logs**, look for `[chat]` timing lines. |
