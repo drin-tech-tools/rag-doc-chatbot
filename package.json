@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx --test lib/auth/permissions.test.ts",
+    "test": "tsx --test lib/auth/permissions.test.ts lib/auth/email-link.test.ts",
     "bootstrap-admin": "tsx scripts/bootstrap-admin.ts"
   },
   "dependencies": {

@@ -81,12 +81,12 @@ flowchart TD
   V --> AAL2
   AAL2 --> APP[App pages + /api/*]
   APP -->|admin| ADM[/admin/users]
-  INV[Admin invite] --> CB[/auth/callback]
+  INV[Admin invite / recovery] --> CB[/auth/callback or /login#access_token]
   CB --> PW[/auth/set-password]
   PW --> S
 ```
 
-Invite-only: public signup is disabled in the Supabase dashboard. Bootstrap the first admin with `npm run bootstrap-admin` (uses `ADMIN_EMAIL`; never hardcodes passwords). See [DEPLOYMENT.md](DEPLOYMENT.md) for MFA, redirect URLs, and env vars.
+Invite-only: public signup is disabled in the Supabase dashboard. Bootstrap the first admin with `npm run bootstrap-admin` (uses `ADMIN_EMAIL`; never hardcodes passwords; re-run to resend a recovery link if the invite was already consumed). See [DEPLOYMENT.md](DEPLOYMENT.md) for MFA, **Redirect URLs**, and env vars. The app accepts PKCE `code`, `token_hash`+`type`, and implicit-flow `#access_token` (incl. when Supabase falls back to Site URL → `/login`).
 
 ## Engineering decisions & lessons learned
 
@@ -101,9 +101,9 @@ git clone https://github.com/drin-tech-tools/rag-doc-chatbot.git
 cd rag-doc-chatbot
 cp .env.example .env.local   # see .env.example — publishable key + service role + ADMIN_EMAIL
 npm install
-npm run bootstrap-admin      # one-time invite + admin role (after migrations)
+npm run bootstrap-admin      # invite (or recovery resend) + admin role
 npm run dev                  # http://localhost:3000 → /login
-npm test                     # permission helper unit tests
+npm test                     # auth + permission unit tests
 ```
 
 Run SQL migrations `0001_init.sql` and `0002_auth_rbac.sql` against your Supabase project before chatting (see [DEPLOYMENT.md](DEPLOYMENT.md)).
