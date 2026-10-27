@@ -10,6 +10,7 @@ import {
   supabase,
   thinkingConfigFor,
 } from "@/lib/clients";
+import { RateLimitError } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -432,6 +433,6 @@ Question: ${question}`;
         ? e.message
         : "Chat failed";
     console.error(`[chat] error phase=${phase} total_ms=${msSince(started)}:`, message);
-    return jsonError(message, timedOut ? 504 : 500);
+    return jsonError(message, timedOut ? 504 : e instanceof RateLimitError ? 429 : 500);
   }
 }
