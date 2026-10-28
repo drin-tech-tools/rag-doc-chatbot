@@ -1,4 +1,5 @@
 import { GoogleGenAI, ThinkingLevel, type ThinkingConfig } from "@google/genai";
+import { withRateLimitRetry } from "@/lib/rate-limit";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 function env(name: string): string {
@@ -75,24 +76,41 @@ export function supabase() {
   return createAdminClient();
 }
 
-/** Batch-embed texts at EMBED_DIM so they stay compatible with existing pgvector data. */
+/** Chunks per embedContent call; small enough that a 429 only costs one short batch. */
+const EMBED_BATCH = 32;
+
+/**
+ * Batch-embed texts at EMBED_DIM so they stay compatible with existing pgvector data.
+ * On a free-tier 429 it waits out Google's `retryDelay` while it fits in `retryBudgetMs`
+ * (default 0: fail fast with a RateLimitError, e.g. for the latency-sensitive chat path).
+ */
 export async function embed(
   texts: string[],
-  opts?: { signal?: AbortSignal },
+  opts?: { signal?: AbortSignal; retryBudgetMs?: number },
 ): Promise<number[][]> {
   const ai = gemini();
   const out: number[][] = [];
-  for (let i = 0; i < texts.length; i += 100) {
+  const deadline = Date.now() + (opts?.retryBudgetMs ?? 0);
+  for (let i = 0; i < texts.length; i += EMBED_BATCH) {
     if (opts?.signal?.aborted) throw new Error("Embedding aborted");
-    const batch = texts.slice(i, i + 100);
-    const res = await ai.models.embedContent({
-      model: EMBED_MODEL,
-      contents: batch,
-      config: {
-        outputDimensionality: EMBED_DIM,
-        ...(opts?.signal ? { abortSignal: opts.signal } : {}),
+    const batch = texts.slice(i, i + EMBED_BATCH);
+    const res = await withRateLimitRetry(
+      () =>
+        ai.models.embedContent({
+          model: EMBED_MODEL,
+          contents: batch,
+          config: {
+            outputDimensionality: EMBED_DIM,
+            ...(opts?.signal ? { abortSignal: opts.signal } : {}),
+          },
+        }),
+      {
+        budgetMs: Math.max(0, deadline - Date.now()),
+        signal: opts?.signal,
+        onRetry: (ms) =>
+          console.warn(`[embed] rate limited, retrying in ${ms}ms (batch ${i / EMBED_BATCH + 1})`),
       },
-    });
+    );
     const vectors = res.embeddings ?? [];
     if (vectors.length !== batch.length) {
       throw new Error(`Expected ${batch.length} embeddings, got ${vectors.length}`);

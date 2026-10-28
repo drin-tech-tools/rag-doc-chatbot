@@ -113,6 +113,7 @@ Live demo for this portfolio deploy: [https://rag-doc-chatbot-brown.vercel.app/]
 | `No role assigned` | Upsert `user_roles` for `app = 'rag-doc-chatbot'` (bootstrap script or admin invite). |
 | **404 / model not available** | Set `GEMINI_CHAT_MODEL` to a model your key can access, or rely on the built-in fallback list in `lib/clients.ts`. |
 | **Chat hangs / timeouts** | Overall chat budget is **45s**. In **Vercel → Deployments → Logs**, look for `[chat] auth_ms` / `embed_ms` / `retrieval_ms` / `stream_open_ms` / `generation_ttft_ms` to see which phase stalled. Apply migration **0003**. Optionally set `GEMINI_CHAT_MODEL` to a model your key can reach. |
+| **429 / `embed_content_free_tier_tokens`** | Gemini free tier caps embedding at ~30k tokens/minute. Uploads embed in small batches and wait out Google's `retryDelay` (up to ~50s on Vercel Hobby); if the wait does not fit, the app returns a "wait Ns and try again" message and creates no document. Large PDFs may need a second try, or enable billing on the key. |
 | **Upload: no extractable text** | Use a text PDF (OCR not included). |
 | **Upload rejected at 4 MB** | Vercel Hobby body limit — keep PDFs under **4 MB**. |
 
